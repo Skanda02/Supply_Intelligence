@@ -280,3 +280,80 @@ def test_readonly_routes_open_to_all_roles(method, path):
     for role in ("ADMIN", "FACILITY_MANAGER", "ANALYST"):
         resp = getattr(client, method)(path, headers=auth_headers(role))
         assert resp.status_code not in (401, 403), f"{role} {method} {path} -> {resp.status_code}"
+
+
+class _FakeJWK:
+    def __init__(self, key):
+        self.key = key
+
+
+class _FakeJWKSClient:
+    def __init__(self, key):
+        self._key = key
+
+    def get_signing_key_from_jwt(self, token):
+        return _FakeJWK(self._key)
+
+
+def _mint_es256(private_pem: str, role: str = "ANALYST") -> str:
+    now = int(time.time())
+    return jwt.encode(
+        {
+            "sub": str(uuid.uuid4()),
+            "aud": "authenticated",
+            "iat": now,
+            "exp": now + 3600,
+            "user_metadata": {"role": role, "facility_id": None},
+        },
+        private_pem,
+        algorithm="ES256",
+    )
+
+
+def test_es256_token_verified_via_jwks(monkeypatch):
+    """Regression: Supabase CLI (ES256) session tokens must authenticate."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    private_pem = private_key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    public_pem = private_key.public_key().public_bytes(
+        serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode()
+    monkeypatch.setattr(security, "_jwks_client", _FakeJWKSClient(public_pem))
+
+    claims = security.verify_token(_mint_es256(private_pem))
+    user = security.user_from_claims(claims)
+    assert user.role == "ANALYST"
+
+    resp = client.get("/api/hospitals", headers={"Authorization": f"Bearer {_mint_es256(private_pem)}"})
+    assert resp.status_code == 200
+
+
+def test_es256_wrong_key_rejected(monkeypatch):
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    def pem(key):
+        return key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ).decode()
+
+    signer = ec.generate_private_key(ec.SECP256R1())
+    other = ec.generate_private_key(ec.SECP256R1())
+    other_public = other.public_key().public_bytes(
+        serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode()
+    monkeypatch.setattr(security, "_jwks_client", _FakeJWKSClient(other_public))
+
+    with pytest.raises(Exception) as exc_info:
+        security.verify_token(_mint_es256(pem(signer)))
+    assert getattr(exc_info.value, "status_code", None) == 401

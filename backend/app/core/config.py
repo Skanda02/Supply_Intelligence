@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     SUPABASE_ANON_KEY: str = ""
     SUPABASE_SERVICE_ROLE_KEY: str = ""
     SUPABASE_JWT_SECRET: str = ""
+    SUPABASE_JWKS_URL: str = ""  # defaults to {SUPABASE_URL}/auth/v1/.well-known/jwks.json
     DATABASE_URL: str = ""  # points at the Supabase pooler
 
     # AI copilot (built last — issue #17)

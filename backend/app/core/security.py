@@ -1,9 +1,14 @@
 """Supabase JWT verification + RBAC (project.md §4, §32). Issue #8.
 
-Supabase Auth signs JWTs with HS256 using ``SUPABASE_JWT_SECRET`` (legacy
-symmetric path). The token carries the caller's identity plus the role claims
-that the ``auth.users`` trigger stamps into ``app_metadata``
-(``supabase/migrations/20261008090200_profiles_trigger.sql``):
+Supabase Auth issues JWTs in two flavours (both accepted here):
+
+* **Legacy HS256**, signed with ``SUPABASE_JWT_SECRET`` (backend-minted
+  tokens from ``POST /auth/login`` and the seeded demo tokens).
+* **Modern ES256/RS256**, signed by GoTrue's asymmetric keys and verified
+  against its JWKS (``{SUPABASE_URL}/auth/v1/.well-known/jwks.json``).
+  Current Supabase CLI stacks issue these — including self-signup sessions,
+  which carry role/facility in ``user_metadata`` (the client SDK cannot write
+  ``app_metadata``).
 
     app_metadata: {"role": "ADMIN" | "FACILITY_MANAGER" | "ANALYST",
                    "facility_id": "<uuid>" | null}
@@ -31,6 +36,7 @@ from collections.abc import Callable
 import jwt
 from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jwt import PyJWKClient
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -101,27 +107,62 @@ def create_access_token(
     return jwt.encode(payload, secret, algorithm="HS256")
 
 
+def _jwks_url() -> str:
+    """JWKS endpoint for asymmetric Supabase tokens (explicit override wins)."""
+    if settings.SUPABASE_JWKS_URL:
+        return settings.SUPABASE_JWKS_URL
+    return f"{settings.SUPABASE_URL.rstrip('/')}/auth/v1/.well-known/jwks.json"
+
+
+_jwks_client: PyJWKClient | None = None
+
+
+def _get_jwks_client() -> PyJWKClient:
+    """Cached JWKS client (keys cached by kid; refreshes on miss)."""
+    global _jwks_client
+    if _jwks_client is None:
+        _jwks_client = PyJWKClient(_jwks_url())
+    return _jwks_client
+
+
 def verify_token(token: str) -> dict:
     """Verify a Supabase-issued JWT and return its claims.
 
-    Raises:
-        HTTPException: 401 when the secret is missing, the token is expired,
+    Asymmetric (ES256/RS256) tokens go through JWKS; HS256 tokens use the
+    shared secret. Raises:
+        HTTPException: 401 when auth is unconfigured, the token is expired,
             or the signature/claims are invalid.
     """
-    secret = settings.SUPABASE_JWT_SECRET
-    if not secret:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Auth is not configured (SUPABASE_JWT_SECRET missing)",
-        )
     try:
-        claims: dict = jwt.decode(
-            token,
-            secret,
-            algorithms=["HS256"],
-            audience="authenticated",
-            options={"require": ["exp", "sub"]},
-        )
+        alg = jwt.get_unverified_header(token).get("alg", "")
+    except jwt.InvalidTokenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid token: {exc}"
+        ) from exc
+    try:
+        if alg in ("ES256", "ES384", "RS256"):
+            key = _get_jwks_client().get_signing_key_from_jwt(token).key
+            claims: dict = jwt.decode(
+                token,
+                key,
+                algorithms=[alg],
+                audience="authenticated",
+                options={"require": ["exp", "sub"]},
+            )
+        else:
+            secret = settings.SUPABASE_JWT_SECRET
+            if not secret:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Auth is not configured (SUPABASE_JWT_SECRET missing)",
+                )
+            claims = jwt.decode(
+                token,
+                secret,
+                algorithms=["HS256"],
+                audience="authenticated",
+                options={"require": ["exp", "sub"]},
+            )
     except jwt.ExpiredSignatureError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired"
