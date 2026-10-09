@@ -22,7 +22,6 @@ import {
   type RequestUrgency,
 } from "../api/mockData";
 import { getMedicines } from "../api/forecast";
-import { pushNotification, seedFromRequests } from "../api/notifications";
 import { useAuth } from "../context/AuthContext";
 import DemoBadge from "../components/DemoBadge";
 import OfferMap from "../components/OfferMap";
@@ -103,15 +102,6 @@ export default function Requests() {
   const [offerError, setOfferError] = useState<string | null>(null);
 
   useEffect(() => {
-    seedFromRequests(
-      DEMO_REQUESTS.map((r) => ({
-        id: r.id,
-        hospital: r.hospital,
-        medicine: r.medicine,
-        quantity: r.quantity,
-        urgency: r.urgency,
-      })),
-    );
     getMedicines()
       .then((medicineOptions) => {
         if (medicineOptions.length) {
@@ -165,10 +155,9 @@ export default function Requests() {
       return;
     }
     const today = new Date().toISOString().slice(0, 10);
-    const newId = `req-${Date.now()}`;
     setRequests((prev) => [
       {
-        id: newId,
+        id: `req-${Date.now()}`,
         hospital: requester,
         medicine,
         quantity: Math.floor(qty),
@@ -179,13 +168,6 @@ export default function Requests() {
       },
       ...prev,
     ]);
-    pushNotification({
-      hospital: requester,
-      medicine,
-      quantity: Math.floor(qty),
-      urgency,
-      requestId: newId,
-    });
     setQuantity("");
     setUrgency("Normal");
     setFormError(null);

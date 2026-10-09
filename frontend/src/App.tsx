@@ -18,7 +18,6 @@ import Redistribution from "./pages/Redistribution";
 import Requests from "./pages/Requests";
 import Shortage from "./pages/Shortage";
 import UserProfileMenu from "./components/UserProfileMenu";
-import NotificationBell from "./components/NotificationBell";
 
 interface NavLinkItem {
   to: string;
@@ -84,7 +83,6 @@ function AuthenticatedApp() {
 
             {/* Header Right: Clean Profile Menu & Mobile Toggle */}
             <div className="flex items-center gap-2">
-              <NotificationBell />
               <UserProfileMenu />
 
               {/* Mobile Menu Button */}
