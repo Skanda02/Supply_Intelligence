@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   AlertCircle,
   ArrowUpDown,
@@ -46,8 +46,9 @@ export default function Inventory() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Search & Filters
-  const [searchTerm, setSearchTerm] = useState("");
+  // Search & Filters (search box can be pre-filled from the topbar via ?q=)
+  const [searchParams] = useSearchParams();
+  const [searchTerm, setSearchTerm] = useState(() => searchParams.get("q") ?? "");
   const [medicine, setMedicine] = useState("All");
   const [risk, setRisk] = useState<"All" | RiskLevel>("All");
   const [maxDays, setMaxDays] = useState("");
@@ -74,6 +75,11 @@ export default function Inventory() {
       .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setLoading(false));
   }, [user?.id]);
+
+  useEffect(() => {
+    const q = searchParams.get("q");
+    if (q != null) setSearchTerm(q);
+  }, [searchParams]);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);

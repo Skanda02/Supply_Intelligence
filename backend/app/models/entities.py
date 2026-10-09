@@ -148,3 +148,35 @@ class PurchaseOrder(Base):
         Index("idx_po_hosp_med", "hospital_id", "medicine_id"),
         Index("idx_po_delivery", "expected_delivery_date"),
     )
+
+
+class AllocationRun(Base):
+    """Stored fair-share allocation recommendation awaiting review."""
+
+    __tablename__ = "allocation_runs"
+
+    id = Column(String(64), primary_key=True, default=lambda: str(uuid.uuid4()))
+    medicine_id = Column(String(64), nullable=False, index=True)
+    medicine_name = Column(String(255), nullable=False)
+    params_json = Column(String, nullable=False, default="{}")
+    result_json = Column(String, nullable=False, default="{}")
+    status = Column(String(20), nullable=False, default="PENDING")  # PENDING, APPROVED, REJECTED
+    created_by = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+    approvals = relationship("AllocationApproval", back_populates="run", cascade="all, delete-orphan")
+
+
+class AllocationApproval(Base):
+    """Review decision on an allocation run."""
+
+    __tablename__ = "allocation_approvals"
+
+    id = Column(String(64), primary_key=True, default=lambda: str(uuid.uuid4()))
+    run_id = Column(String(64), ForeignKey("allocation_runs.id"), nullable=False, index=True)
+    decision = Column(String(20), nullable=False)  # APPROVED, REJECTED
+    reviewer = Column(String(255), nullable=False)
+    note = Column(String(1000), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+    run = relationship("AllocationRun", back_populates="approvals")

@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 
 from app.api import (
+    allocation,
     assistant,
     auth,
     core_routes,
@@ -24,6 +25,7 @@ from app.api import (
 #: Mounted under /api/v1 (canonical contract paths)
 api_v1_router = APIRouter()
 api_v1_router.include_router(auth.router, prefix="/auth", tags=["auth"])
+api_v1_router.include_router(allocation.router, prefix="/allocation", tags=["allocation"])
 api_v1_router.include_router(facilities.router, prefix="/facilities", tags=["facilities"])
 api_v1_router.include_router(hospitals.router, prefix="/hospitals", tags=["hospitals"])
 api_v1_router.include_router(medicines.router, prefix="/medicines", tags=["medicines"])
