@@ -13,7 +13,8 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { getNetworkPriorities, type PriorityRow } from "../api/medpredict";
+import { getNetworkPriorities, getStockoutRisks, type PriorityRow } from "../api/medpredict";
+import { runDemandScenario, type ScenarioResponse } from "../api/forecast";
 import { useAuth } from "../context/AuthContext";
 import RiskBadge from "../components/RiskBadge";
 
@@ -42,6 +43,13 @@ export default function Priority() {
   const [levelFilter, setLevelFilter] = useState<"All" | "Critical" | "High" | "Medium">("All");
   const [searchTerm, setSearchTerm] = useState("");
 
+  // Fair-share emergency simulation (adapted from #58 to our /simulation/run API).
+  const [simHospitalId, setSimHospitalId] = useState("");
+  const [uplift, setUplift] = useState(40);
+  const [simResult, setSimResult] = useState<ScenarioResponse | null>(null);
+  const [simLoading, setSimLoading] = useState(false);
+  const [simError, setSimError] = useState<string | null>(null);
+
   useEffect(() => {
     setLoading(true);
     setError(null);
@@ -66,6 +74,59 @@ export default function Priority() {
       return true;
     });
   }, [priorities, levelFilter, searchTerm]);
+
+  // Top-5 cap: the ranked entries shown on charts and cards.
+  const visibleFive = useMemo(() => filteredPriorities.slice(0, 5), [filteredPriorities]);
+
+  useEffect(() => {
+    if (!simHospitalId && visibleFive.length > 0) {
+      setSimHospitalId(visibleFive[0].hospital_id);
+    }
+  }, [visibleFive, simHospitalId]);
+
+  async function runFairShare() {
+    if (!simHospitalId) return;
+    setSimLoading(true);
+    setSimError(null);
+    setSimResult(null);
+    try {
+      const risks = await getStockoutRisks(simHospitalId);
+      const pool = risks.filter((r) => r.days_until_stockout != null);
+      const candidates = pool.length > 0 ? pool : risks;
+      if (candidates.length === 0) throw new Error("No demand data for this hospital.");
+      const worst = [...candidates].sort(
+        (a, b) => (a.days_until_stockout ?? 999) - (b.days_until_stockout ?? 999),
+      )[0];
+      const res = await runDemandScenario(simHospitalId, worst.medicine_id, uplift);
+      setSimResult(res);
+    } catch (err: unknown) {
+      setSimError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSimLoading(false);
+    }
+  }
+
+  // Re-rank the visible five with simulated urgency for the surged hospital.
+  const reranked = useMemo(() => {
+    if (!simResult || !simHospitalId) return null;
+    const mult = 1 + simResult.demand_increase_pct / 100;
+    const simDays = simResult.simulated_days_until_stockout;
+    return visibleFive
+      .map((p, idx) => {
+        if (p.hospital_id !== simHospitalId) {
+          return { ...p, simScore: p.score, baseRank: idx };
+        }
+        const stockoutSim =
+          simDays == null ? p.breakdown.stockout : Math.max(0, 20 - simDays * 4);
+        const emergencySim = Math.min(20, p.breakdown.emergency * mult);
+        const simScore = Math.round(
+          p.score - p.breakdown.stockout - p.breakdown.emergency + stockoutSim + emergencySim,
+        );
+        return { ...p, simScore, baseRank: idx };
+      })
+      .sort((a, b) => b.simScore - a.simScore)
+      .map((p, i) => ({ ...p, moved: p.baseRank - i, rank: i + 1 }));
+  }, [simResult, simHospitalId, visibleFive]);
 
   if (loading) {
     return (
@@ -143,7 +204,7 @@ export default function Priority() {
 
         <ResponsiveContainer width="100%" height={240}>
           <BarChart
-            data={priorities.map((p) => ({
+            data={visibleFive.map((p) => ({
               name: p.hospital.split(" ")[0],
               score: p.score,
               level: p.level,
@@ -177,7 +238,7 @@ export default function Priority() {
               }}
             />
             <Bar dataKey="score" radius={[0, 4, 4, 0]}>
-              {priorities.map((p) => (
+              {visibleFive.map((p) => (
                 <Cell key={p.hospital_id} fill={BAR_COLORS[p.level] ?? "#64748b"} />
               ))}
             </Bar>
@@ -242,9 +303,14 @@ export default function Priority() {
         </div>
       </div>
 
-      {/* Ranked Hospital Cards List */}
+      {/* Ranked Hospital Cards List — top 5 */}
+      {filteredPriorities.length > 5 && (
+        <p className="text-xs text-slate-500">
+          Showing top 5 of {filteredPriorities.length} ranked facilities.
+        </p>
+      )}
       <ol className="grid gap-4">
-        {filteredPriorities.map((p, i) => {
+        {visibleFive.map((p, i) => {
           const isCriticalTier = p.level === "Critical";
           const isMyHospital = p.hospital === currentHospitalName;
 
@@ -332,6 +398,103 @@ export default function Priority() {
           );
         })}
       </ol>
+
+      {/* Fair share under emergency demand (adapted from #58).
+          Uplift one hospital's emergency demand, recalculate via the
+          simulation API, and re-rank the top 5 — results labeled simulated. */}
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <h2 className="text-sm font-bold text-slate-900">Fair Share — Emergency Demand Simulation</h2>
+        <p className="mt-0.5 text-xs text-slate-500">
+          Uplift one hospital's emergency demand and recalculate — simulated results update the ranking below.
+        </p>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <select
+            aria-label="Surge hospital"
+            className="rounded border border-slate-300 px-2 py-1 text-sm"
+            value={simHospitalId}
+            onChange={(e) => setSimHospitalId(e.target.value)}
+          >
+            {visibleFive.map((p) => (
+              <option key={p.hospital_id} value={p.hospital_id}>{p.hospital}</option>
+            ))}
+          </select>
+          {[20, 40, 60].map((pct) => (
+            <button
+              key={pct}
+              type="button"
+              onClick={() => setUplift(pct)}
+              className={`rounded px-3 py-1 text-sm font-semibold ${
+                uplift === pct ? "bg-slate-900 text-white" : "border border-slate-300 hover:bg-slate-100"
+              }`}
+            >
+              +{pct}%
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={runFairShare}
+            disabled={simLoading || !simHospitalId}
+            className="rounded bg-indigo-600 px-3 py-1 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+          >
+            {simLoading ? "Running…" : "Run Simulation"}
+          </button>
+        </div>
+        {simError && <p className="mt-2 text-sm text-red-700">{simError}</p>}
+        {simResult && (
+          <div className="mt-4 space-y-3">
+            <div className="grid gap-3 sm:grid-cols-3">
+              {[
+                {
+                  label: "Stock-out",
+                  before: simResult.baseline_stockout_date ?? "—",
+                  after: simResult.simulated_stockout_date ?? "—",
+                },
+                { label: "Risk", before: simResult.baseline_risk_level, after: simResult.simulated_risk_level },
+                {
+                  label: "Recommended order",
+                  before: `${simResult.baseline_recommended_order.toLocaleString()} units`,
+                  after: `${simResult.simulated_recommended_order.toLocaleString()} units`,
+                },
+              ].map((c) => (
+                <div key={c.label} className="rounded-lg border border-slate-200 p-3">
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{c.label}</p>
+                  <p className="mt-1 text-sm"><span className="text-slate-500">Before:</span> <strong>{c.before}</strong></p>
+                  <p className="text-sm">
+                    <span className="text-slate-500">After +{simResult.demand_increase_pct}%:</span>{" "}
+                    <strong className="text-indigo-700">{c.after}</strong>
+                  </p>
+                </div>
+              ))}
+            </div>
+            {reranked && (
+              <div>
+                <h3 className="mb-1 text-xs font-bold uppercase tracking-wide text-slate-500">
+                  Re-ranked top 5 (simulated)
+                </h3>
+                <ol className="divide-y divide-slate-100 rounded-lg border border-slate-200">
+                  {reranked.map((p) => (
+                    <li key={p.hospital_id} className="flex items-center justify-between px-3 py-2 text-sm">
+                      <span>
+                        <strong className="mr-2">#{p.rank}</strong>
+                        {p.hospital}
+                        {p.moved !== 0 && (
+                          <span className={`ml-2 text-xs font-bold ${p.moved > 0 ? "text-rose-600" : "text-emerald-600"}`}>
+                            {p.moved > 0 ? `▲ up ${p.moved}` : `▼ down ${-p.moved}`}
+                          </span>
+                        )}
+                      </span>
+                      <span className="font-mono font-bold">
+                        {p.score} → <span className="text-indigo-700">{p.simScore}</span>
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            )}
+            <p className="text-xs text-slate-600">{simResult.summary}</p>
+          </div>
+        )}
+      </section>
     </div>
   );
 }
