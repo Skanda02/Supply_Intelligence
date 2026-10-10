@@ -93,6 +93,11 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const STORAGE_KEY = "medipulse_auth_user";
+
+// AUTH DISABLED FOR TESTING — when true, a preset facility is used as the
+// logged-in user so all pages load without signing in.
+// To re-enable auth: set this to false.
+const DEV_BYPASS_AUTH = true;
 const BASE_URL =
   (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://localhost:8000";
 
@@ -132,6 +137,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return localStorage.getItem(TOKEN_KEY);
   });
 
+  // AUTH DISABLED FOR TESTING — default to a preset facility so pages gated on
+  // `user?.id` fetch data without logging in.
+  // To re-enable auth: set DEV_BYPASS_AUTH = false below.
   const [user, setUser] = useState<HospitalProfile | null>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
@@ -144,6 +152,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     } catch {
       // Fallback
+    }
+    if (DEV_BYPASS_AUTH) {
+      return PRESET_HOSPITALS[0];
     }
     return null;
   });

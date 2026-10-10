@@ -41,9 +41,28 @@ function AuthenticatedApp() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const location = useLocation();
 
-  if (!user) {
-    return location.pathname === "/signup" ? <SignUp /> : <Login />;
-  }
+  // AUTH DISABLED FOR TESTING — skip login gate so other pages can be tested.
+  // To re-enable auth: uncomment the block below.
+  // if (!user) {
+  //   return location.pathname === "/signup" ? <SignUp /> : <Login />;
+  // }
+  void location;
+  void Login;
+  void SignUp;
+
+  // Fallback display user when auth is bypassed (no login).
+  const displayUser = user ?? {
+    id: "H01",
+    name: "Hospital A",
+    code: "H01",
+    email: "hospital-a@medipulse.health",
+    role: "ADMIN",
+    userName: "Test Admin",
+    region: "Bengaluru",
+    bedCapacity: 250,
+    tier: "Tier 1 Trauma Center",
+    avatarColor: "from-blue-600 to-indigo-600",
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 flex flex-col selection:bg-indigo-500 selection:text-white">
@@ -149,7 +168,8 @@ function AuthenticatedApp() {
       <footer className="mt-auto border-t border-slate-200 bg-white py-3 text-xs text-slate-500">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-2">
           <p>
-            <strong className="text-slate-700">{user.name}</strong> • Institutional Workspace
+            {/* AUTH DISABLED FOR TESTING — was {user.name} */}
+            <strong className="text-slate-700">{displayUser.name}</strong> • Institutional Workspace
           </p>
           <p className="text-slate-400">MediPulse Supply Intelligence</p>
         </div>

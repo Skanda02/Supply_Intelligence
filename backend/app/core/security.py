@@ -46,6 +46,18 @@ from app.models.entities import Hospital
 
 logger = logging.getLogger("app.security")
 
+# ---------------------------------------------------------------------------
+# TESTING ONLY — AUTH BYPASS (commented-out authentication for local testing).
+# Set to False to re-enable JWT verification + RBAC.
+# When True:
+#   * get_current_user() returns a dummy ADMIN instead of verifying the JWT
+#     (original 401 logic is commented out below).
+#   * require_roles() skips the 403 role check.
+#   * get_helpdesk_scope() skips JWT verification, uses X-Hospital-Id header
+#     or the first hospital in the DB.
+# ---------------------------------------------------------------------------
+DEV_BYPASS_AUTH = True
+
 ROLE_ADMIN = "ADMIN"
 ROLE_FACILITY_MANAGER = "FACILITY_MANAGER"
 ROLE_ANALYST = "ANALYST"
@@ -70,6 +82,14 @@ class CurrentUser(BaseModel):
     email: str | None = None
     role: str
     facility_id: str | None = None
+
+
+_DEV_BYPASS_USER = CurrentUser(
+    user_id="test-admin-id",
+    email="test-admin@medipulse.health",
+    role="ADMIN",
+    facility_id=None,
+)
 
 
 def jwt_secret_configured() -> bool:
@@ -205,6 +225,16 @@ async def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> CurrentUser:
     """FastAPI dependency: verified caller or 401 (missing/invalid/expired)."""
+    # AUTH DISABLED FOR TESTING — bypass JWT verification, return dummy ADMIN.
+    # To re-enable auth: set DEV_BYPASS_AUTH = False above and uncomment below.
+    if DEV_BYPASS_AUTH:
+        return _DEV_BYPASS_USER
+    # if credentials is None or not credentials.credentials:
+    #     raise HTTPException(
+    #         status_code=status.HTTP_401_UNAUTHORIZED,
+    #         detail="Not authenticated: missing Bearer token",
+    #     )
+    # return user_from_claims(verify_token(credentials.credentials))
     if credentials is None or not credentials.credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -217,6 +247,16 @@ def require_roles(*allowed: str) -> Callable:
     """Dependency factory: 403 unless the caller's role is in ``allowed``."""
 
     async def _check(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+        # AUTH DISABLED FOR TESTING — skip role check, allow everything.
+        # To re-enable: set DEV_BYPASS_AUTH = False and uncomment below.
+        if DEV_BYPASS_AUTH:
+            return _DEV_BYPASS_USER
+        # if user.role not in allowed:
+        #     raise HTTPException(
+        #         status_code=status.HTTP_403_FORBIDDEN,
+        #         detail=f"Role {user.role} is not allowed here (needs one of {list(allowed)})",
+        #     )
+        # return user
         if user.role not in allowed:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -255,9 +295,40 @@ def get_helpdesk_scope(
 
     Only ever scopes to ONE hospital — there is no network-wide path.
     """
+    # AUTH DISABLED FOR TESTING — skip JWT verification.
+    # Uses X-Hospital-Id header if given, else first hospital in DB, else "H01".
+    # To re-enable auth: set DEV_BYPASS_AUTH = False and uncomment the JWT block below.
+    if DEV_BYPASS_AUTH:
+        resolved_id = (hospital_id.strip() if hospital_id and hospital_id.strip() else None)
+        role = "ADMIN"
+        if not resolved_id:
+            first = db.query(Hospital).first()
+            resolved_id = first.id if first else "H01"
+        hospital = db.query(Hospital).filter(Hospital.id == resolved_id).first()
+        if hospital is None:
+            # DB has no matching hospital (e.g. empty test DB) — return scope anyway
+            # so other parts can be tested without auth/seed data.
+            return HelpdeskScope(
+                hospital_id=resolved_id, hospital_name=resolved_id, role=role
+            )
+        return HelpdeskScope(
+            hospital_id=hospital.id, hospital_name=hospital.name, role=role
+        )
     resolved_id: str | None = None
     role: str | None = None
 
+    # has_bearer = credentials is not None and bool(credentials.credentials)
+    # if has_bearer:
+    #     user = user_from_claims(verify_token(credentials.credentials))
+    #     if not user.facility_id:
+    #         raise HTTPException(
+    #             status_code=status.HTTP_401_UNAUTHORIZED,
+    #             detail="Token has no facility scope",
+    #         )
+    #     resolved_id, role = user.facility_id, user.role
+    # elif hospital_id:
+    #     resolved_id = hospital_id.strip() or None
+    # --- original auth logic (active when DEV_BYPASS_AUTH is False) ---
     has_bearer = credentials is not None and bool(credentials.credentials)
     if has_bearer:
         user = user_from_claims(verify_token(credentials.credentials))
